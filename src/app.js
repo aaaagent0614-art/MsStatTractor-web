@@ -14,7 +14,7 @@ const state = {
   stream: null, grabber: null, grabberTrack: null,
   frameW: 0, frameH: 0, boxes: null, boxFrameW: 0, boxFrameH: 0,
   tick: 0, busy: false, running: false, timer: null,
-  selecting: null,
+  selecting: null, paused: false, pip: null,
   lv: null, exp: null, hp: null, mp: null,
   session: null, readings: []
 };
@@ -213,22 +213,28 @@ async function locate() {
 }
 
 // ---------- 統計 ----------
-const timing = { lastExp: null, gain: 0, startedAt: 0, elapsedMs: 0, samples: [], lastLevel: null };
+const timing = { lastExp: null, gain: 0, elapsedMs: 0, samples: [], lastLevel: null, lastTickAt: 0 };
+
+/** 有效記錄時間：暫停期間不累加 */
+function tickClock() {
+  const now = performance.now();
+  if (!timing.lastTickAt) { timing.lastTickAt = now; return; }
+  if (!state.paused) timing.elapsedMs += now - timing.lastTickAt;
+  timing.lastTickAt = now;
+}
 
 function recordExp(cur, pct) {
-  const now = performance.now();
-  if (!timing.startedAt) { timing.startedAt = now; timing.lastExp = cur; return; }
-  if (timing.lastExp == null) { timing.lastExp = cur; return; }
+  if (state.paused) { timing.lastExp = cur; return; }
+  if (!Number.isFinite(timing.lastExp)) { timing.lastExp = cur; timing.lastLevel = state.lv; return; }
   let delta = cur - timing.lastExp;
   // 升級：經驗倒退但等級 +1 → 把跨級的量補回來
   if (delta < 0 && state.lv && timing.lastLevel && state.lv === timing.lastLevel + 1) {
     const total = expToNext(timing.lastLevel) || 0;
     delta = total - timing.lastExp + cur;
   }
-  if (delta < 0 || delta > 5_000_000) { timing.lastExp = cur; return; } // 明顯是誤讀，只用來校正基準
+  if (delta < 0 || delta > 5_000_000) { timing.lastExp = cur; timing.lastLevel = state.lv; return; } // 明顯是誤讀，只校正基準
   timing.gain += delta;
   timing.lastExp = cur;
-  timing.elapsedMs = now - timing.startedAt;
   timing.lastLevel = state.lv;
   timing.samples.push({ t: Math.round(timing.elapsedMs / 1000), gain: timing.gain });
   if (timing.samples.length > 720) timing.samples.shift();
@@ -285,6 +291,7 @@ async function tick() {
   } catch (e) {
     setStatus('讀取錯誤：' + e.message, 'bad');
   } finally {
+    tickClock();
     state.busy = false;
   }
 }
@@ -300,14 +307,69 @@ function render() {
   const hours = timing.elapsedMs / 3600000;
   const rate = hours > 0 ? timing.gain / hours : NaN;
   $('gain').textContent = timing.gain ? fmtNum(timing.gain) : '0';
-  $('rate').textContent = Number.isFinite(rate) && rate > 0 ? fmtNum(Math.round(rate)) : '—';
+  $('rate').textContent = pipRateText();
 
-  const total = state.exp ? (expToNext(state.lv) ?? null) : null;
-  const remain = total && state.exp ? Math.max(0, total - state.exp.cur) : null;
-  $('eta').textContent = remain && Number.isFinite(rate) && rate > 0 ? fmtDuration(remain / rate * 3600000) : '—';
+  $('eta').textContent = pipEtaText();
   $('elapsed').textContent = fmtDuration(timing.elapsedMs);
   $('ticks').textContent = String(state.tick);
   drawPreview();
+  updatePip();
+}
+
+// ---------- 置頂小浮窗（子母畫面）----------
+const PIP_HTML = `<style>
+  body { margin:0; padding:12px; background:#12141a; color:#e8eaf0;
+         font-family:"Segoe UI",system-ui,"Microsoft JhengHei",sans-serif }
+  .k { font-size:10.5px; color:#8b93a7; margin-top:9px }
+  .v { font-size:20px; font-weight:600; font-variant-numeric:tabular-nums }
+  .v.big { font-size:28px; color:#8fd0ff }
+</style>
+<div class="k" style="margin-top:0">EXP / 小時</div><div class="v big" id="pRate">—</div>
+<div class="k">本次經驗收益</div><div class="v" id="pGain">0</div>
+<div class="k">預計升級</div><div class="v" id="pEta">—</div>
+<div class="k">等級 / 經驗</div><div class="v" id="pLv">—</div>
+<div class="k">有效記錄時間</div><div class="v" id="pTime">0 分 0 秒</div>`;
+
+function pipRateText() {
+  const hours = timing.elapsedMs / 3600000;
+  const rate = hours > 0 ? timing.gain / hours : NaN;
+  return Number.isFinite(rate) && rate > 0 ? fmtNum(Math.round(rate)) : '—';
+}
+function pipEtaText() {
+  const total = state.exp ? expToNext(state.lv) : null;
+  const remain = total && state.exp ? Math.max(0, total - state.exp.cur) : null;
+  const hours = timing.elapsedMs / 3600000;
+  const rate = hours > 0 ? timing.gain / hours : NaN;
+  return remain && Number.isFinite(rate) && rate > 0 ? fmtDuration(remain / rate * 3600000) : '—';
+}
+
+async function togglePip() {
+  if (state.pip) { state.pip.close(); state.pip = null; $('pip').textContent = '開啟小浮窗'; return; }
+  if (!('documentPictureInPicture' in window)) {
+    setStatus('這個瀏覽器不支援置頂小浮窗（需要電腦版 Chrome / Edge 116 以上）', 'bad');
+    return;
+  }
+  try {
+    const win = await documentPictureInPicture.requestWindow({ width: 240, height: 320 });
+    win.document.title = 'MsStatTractor';
+    win.document.body.innerHTML = PIP_HTML;
+    win.addEventListener('pagehide', () => { state.pip = null; $('pip').textContent = '開啟小浮窗'; });
+    state.pip = win;
+    $('pip').textContent = '關閉小浮窗';
+    updatePip();
+  } catch (e) {
+    setStatus('開啟小浮窗失敗：' + e.message, 'bad');
+  }
+}
+
+function updatePip() {
+  if (!state.pip) return;
+  const d = state.pip.document;
+  d.getElementById('pRate').textContent = pipRateText();
+  d.getElementById('pGain').textContent = fmtNum(timing.gain);
+  d.getElementById('pEta').textContent = pipEtaText();
+  d.getElementById('pLv').textContent = `${state.lv ?? '—'}　${state.exp ? state.exp.pct.toFixed(2) + '%' : '—'}`;
+  d.getElementById('pTime').textContent = fmtDuration(timing.elapsedMs);
 }
 
 function every(fn, ms) {
@@ -357,9 +419,15 @@ let devImage = null;
 (async function boot() {
   $('pick').addEventListener('click', connect);
   $('reset').addEventListener('click', () => {
-    timing.lastExp = null; timing.gain = 0; timing.startedAt = 0; timing.elapsedMs = 0;
+    timing.lastExp = null; timing.gain = 0; timing.lastTickAt = 0; timing.elapsedMs = 0;
     timing.samples = []; timing.lastLevel = null; state.tick = 0; render();
   });
+  $('pause').addEventListener('click', () => {
+    state.paused = !state.paused;
+    $('pause').textContent = state.paused ? '繼續記錄' : '暫停記錄';
+    setStatus(state.paused ? '已暫停記錄（畫面仍持續讀取，暫停期間不計入收益）' : '繼續記錄');
+  });
+  $('pip').addEventListener('click', togglePip);
   document.querySelectorAll('button[data-field]').forEach((btn) => {
     btn.addEventListener('click', () => {
       if (!state.frameW) { setStatus('先按「選擇遊戲視窗」才能框選', 'bad'); return; }
@@ -374,6 +442,7 @@ let devImage = null;
     setStatus('已清除記住的框，下一輪重新自動定位');
     render();
   });
+  window.__diag = { state, timing }; // 除錯用：測試腳本可讀內部狀態
   if (DEV_IMG) {
     // 開發模式：用靜態圖片當畫面來源，驗證整條管線（沒有 getDisplayMedia）
     devImage = new Image();
