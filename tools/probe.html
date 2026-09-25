@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>MsStatTractor Web — OCR 探針</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; background: #111; color: #eee; }
+  #log { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px; }
+  canvas { border: 1px solid #444; max-width: 100%; }
+  .ok { color: #6f6; } .bad { color: #f88; }
+</style>
+</head>
+<body>
+<h3>OCR 探針（離線樣本）</h3>
+<div id="log">loading…</div>
+<canvas id="crop"></canvas>
+<script type="module" src="./probe.js"></script>
+</body>
+</html>
