@@ -283,5 +283,11 @@ let devImage = null;
     tick();
   } else {
     setStatus('先按「選擇遊戲視窗」');
+    // ?preload=1：先把模型抓好（頁面剛開就先下載，之後按下去就能直接開始）
+    if (new URLSearchParams(location.search).has('preload')) {
+      engine()
+        .then(() => setStatus('OCR 模型已就緒，可以按「選擇遊戲視窗」開始'))
+        .catch((e) => setStatus('模型載入失敗：' + e.message, 'bad'));
+    }
   }
 })();
