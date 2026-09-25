@@ -14,6 +14,7 @@ const state = {
   stream: null, grabber: null, grabberTrack: null,
   frameW: 0, frameH: 0, boxes: null, boxFrameW: 0, boxFrameH: 0,
   tick: 0, busy: false, running: false, timer: null,
+  selecting: null,
   lv: null, exp: null, hp: null, mp: null,
   session: null, readings: []
 };
@@ -23,6 +24,86 @@ const video = $('video');
 const frame = document.createElement('canvas');
 const frameCtx = frame.getContext('2d', { willReadFrequently: true });
 const scratch = document.createElement('canvas');
+
+// ---------- 校正預覽與手動框選 ----------
+const preview = $('preview');
+const previewCtx = preview.getContext('2d');
+const FIELD_COLORS = { EXP: '#4da3ff', LV: '#7cff7c', HP: '#ff7c7c', MP: '#c07cff' };
+const boxKey = (w, h) => `msstattractor.boxes.${w}x${h}`;
+let dragRect = null;
+
+function saveBoxes() {
+  if (!state.boxes || !state.frameW) return;
+  try { localStorage.setItem(boxKey(state.frameW, state.frameH), JSON.stringify(state.boxes)); } catch { /* 無痕模式 */ }
+}
+function loadBoxes(w, h) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(boxKey(w, h)) || 'null');
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch { return null; }
+}
+function forgetBoxes(w, h) {
+  try { localStorage.removeItem(boxKey(w, h)); } catch { /* ignore */ }
+}
+
+function drawPreview() {
+  if (!state.frameW || !state.frameH) return;
+  const scale = Math.min(1, 880 / state.frameW);
+  preview.width = Math.round(state.frameW * scale);
+  preview.height = Math.round(state.frameH * scale);
+  previewCtx.drawImage(frame, 0, 0, preview.width, preview.height);
+  previewCtx.lineWidth = 2;
+  previewCtx.font = '12px ui-monospace, monospace';
+  for (const [key, b] of Object.entries(state.boxes || {})) {
+    const color = key === state.selecting ? '#ffd400' : (FIELD_COLORS[key] || '#fff');
+    previewCtx.strokeStyle = color;
+    previewCtx.strokeRect(b.x * scale, b.y * scale, (b.x1 - b.x) * scale, (b.y1 - b.y) * scale);
+    previewCtx.fillStyle = color;
+    previewCtx.fillText(key, b.x * scale, Math.max(12, b.y * scale - 3));
+  }
+  if (dragRect) {
+    previewCtx.strokeStyle = '#ffd400';
+    previewCtx.setLineDash([4, 3]);
+    previewCtx.strokeRect(dragRect.x, dragRect.y, dragRect.w, dragRect.h);
+    previewCtx.setLineDash([]);
+  }
+}
+
+preview.addEventListener('mousedown', (e) => {
+  if (!state.selecting) return;
+  const r = preview.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  dragRect = { x0: x, y0: y, x, y, w: 0, h: 0 };
+  e.preventDefault();
+});
+preview.addEventListener('mousemove', (e) => {
+  if (!dragRect) return;
+  const r = preview.getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  dragRect = {
+    x0: dragRect.x0, y0: dragRect.y0,
+    x: Math.min(dragRect.x0, x), y: Math.min(dragRect.y0, y),
+    w: Math.abs(x - dragRect.x0), h: Math.abs(y - dragRect.y0)
+  };
+  drawPreview();
+});
+window.addEventListener('mouseup', () => {
+  if (!dragRect || !state.selecting) return;
+  const scale = state.frameW / preview.width;
+  const box = {
+    x: Math.round(dragRect.x * scale), y: Math.round(dragRect.y * scale),
+    x1: Math.round((dragRect.x + dragRect.w) * scale), y1: Math.round((dragRect.y + dragRect.h) * scale)
+  };
+  if (box.x1 - box.x > 4 && box.y1 - box.y > 4) {
+    state.boxes = state.boxes || {};
+    state.boxes[state.selecting] = box;
+    saveBoxes();
+    setStatus(`已框選 ${state.selecting}（${box.x1 - box.x}×${box.y1 - box.y}）`);
+  }
+  state.selecting = null;
+  dragRect = null;
+  render();
+});
 
 function setStatus(text, kind = '') { $('status').textContent = text; $('status').className = kind; }
 
@@ -107,6 +188,14 @@ async function readBox(box, scale = 3) {
 
 /** 首次定位：掃畫面底部 12% 那條狀態列，找出四個欄位的位置。 */
 async function locate() {
+  // 這個解析度上次記住的框優先（自動定位成功或使用者框選過都會存下來）
+  const remembered = loadBoxes(state.frameW, state.frameH);
+  if (remembered && Object.keys(remembered).length) {
+    state.boxes = remembered;
+    state.boxFrameW = state.frameW; state.boxFrameH = state.frameH;
+    setStatus(`使用這個解析度記住的框：${Object.keys(remembered).join(' / ')}`);
+    return true;
+  }
   setStatus('正在找狀態列（LV / EXP / HP / MP）…');
   const bandY = Math.round(state.frameH * 0.88);
   const band = document.createElement('canvas');
@@ -118,7 +207,8 @@ async function locate() {
   state.boxes = boxes;
   state.boxFrameW = state.frameW; state.boxFrameH = state.frameH;
   const found = Object.keys(boxes);
-  setStatus(found.length ? `定位完成：${found.join(' / ')}` : '找不到狀態列——請確認遊戲畫面下方看得到 EXP 那條狀態列');
+  if (found.length) saveBoxes();
+  setStatus(found.length ? `定位完成：${found.join(' / ')}` : '找不到狀態列——請確認遊戲畫面下方看得到 EXP 那條狀態列，或用下面的「框選」自己圈起來');
   return found.length > 0;
 }
 
@@ -217,6 +307,7 @@ function render() {
   $('eta').textContent = remain && Number.isFinite(rate) && rate > 0 ? fmtDuration(remain / rate * 3600000) : '—';
   $('elapsed').textContent = fmtDuration(timing.elapsedMs);
   $('ticks').textContent = String(state.tick);
+  drawPreview();
 }
 
 function every(fn, ms) {
@@ -268,6 +359,20 @@ let devImage = null;
   $('reset').addEventListener('click', () => {
     timing.lastExp = null; timing.gain = 0; timing.startedAt = 0; timing.elapsedMs = 0;
     timing.samples = []; timing.lastLevel = null; state.tick = 0; render();
+  });
+  document.querySelectorAll('button[data-field]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (!state.frameW) { setStatus('先按「選擇遊戲視窗」才能框選', 'bad'); return; }
+      state.selecting = btn.dataset.field;
+      setStatus(`請在下面的畫面上拖曳，框住「${btn.textContent.trim()}」的數字`);
+      render();
+    });
+  });
+  $('relocate').addEventListener('click', () => {
+    forgetBoxes(state.frameW, state.frameH);
+    state.boxes = null;
+    setStatus('已清除記住的框，下一輪重新自動定位');
+    render();
   });
   if (DEV_IMG) {
     // 開發模式：用靜態圖片當畫面來源，驗證整條管線（沒有 getDisplayMedia）

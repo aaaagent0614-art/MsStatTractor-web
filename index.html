@@ -25,6 +25,7 @@
   .card .s { font-size: 11.5px; color: #7f879b; margin-top: 4px; }
   video { width: 320px; border-radius: 8px; border: 1px solid #262b38; background: #000; }
   #raw { font-size: 11.5px; color: #6f7789; font-family: ui-monospace, monospace; margin-top: 10px; word-break: break-all; }
+  #preview { max-width: 100%; border: 1px solid #262b38; border-radius: 8px; background: #000; display: block; cursor: crosshair; }
   .foot { font-size: 11.5px; color: #6f7789; line-height: 1.7; margin-top: 16px; border-top: 1px solid #262b38; padding-top: 10px; }
 </style>
 </head>
@@ -52,6 +53,20 @@
     <div class="card"><div class="k">預計升級</div><div class="v" id="eta">—</div><div class="s">依目前速度估算</div></div>
   </div>
   <div id="raw"></div>
+
+  <h2 style="font-size:14px;margin:22px 0 6px">畫面與辨識校正</h2>
+  <div class="sub" style="margin-bottom:8px">
+    藍框＝EXP、綠框＝LV、紅框＝HP、紫框＝MP。框錯了就按下面對應的按鈕，直接在畫面上拖一個框圈住那個數字（大概框住就好）。框選位置會依視窗解析度記住。
+  </div>
+  <canvas id="preview"></canvas>
+  <div class="row" style="margin-top:10px">
+    <span style="font-size:12.5px;color:#8b93a7">框選：</span>
+    <button class="ghost" data-field="EXP">EXP</button>
+    <button class="ghost" data-field="LV">等級</button>
+    <button class="ghost" data-field="HP">HP</button>
+    <button class="ghost" data-field="MP">MP</button>
+    <button class="ghost" id="relocate">重新自動定位</button>
+  </div>
 
   <div class="foot">
     這是不會安裝任何 exe 的網頁版：沒有背景程式、不注入遊戲、不讀取記憶體，只用瀏覽器內建的視窗擷取＋本機 OCR。<br>
